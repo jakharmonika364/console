@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -142,4 +144,36 @@ func TestMigrateKBGapsSchema_AggregatesLegacyRows(t *testing.T) {
 	assert.Equal(t, "fixes/istio", gaps[0].Path)
 	assert.Equal(t, 2, gaps[0].HitCount)
 	assert.WithinDuration(t, time.Now().Add(-24*time.Hour), gaps[0].LastSeen, time.Minute)
+}
+
+// TestMigration_KBQueryGaps_UpgradeFromMissingLastSeen reproduces the startup
+// crash reported in issue #14421: if kb_query_gaps already exists without the
+// last_seen column (old DB), migration must not fail when adding the index.
+func TestMigration_KBQueryGaps_UpgradeFromMissingLastSeen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	// Pre-create the DB with a legacy kb_query_gaps table that has no last_seen column.
+	legacyDSN := dbPath + "?_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", legacyDSN)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE kb_query_gaps (
+		path      TEXT PRIMARY KEY,
+		hit_count INTEGER NOT NULL DEFAULT 0
+	)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO kb_query_gaps (path, hit_count) VALUES ('fixes/cert-manager', 3)`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	// NewSQLiteStore must succeed — not crash with "no such column: last_seen".
+	s, err := NewSQLiteStore(dbPath)
+	require.NoError(t, err, "migration must succeed on a DB with legacy kb_query_gaps schema (missing last_seen)")
+	t.Cleanup(func() { s.Close() })
+
+	// Existing row must survive the migration.
+	gaps, err := s.ListTopKBGaps(context.Background(), 10)
+	require.NoError(t, err)
+	require.Len(t, gaps, 1)
+	assert.Equal(t, "fixes/cert-manager", gaps[0].Path)
+	assert.Equal(t, 3, gaps[0].HitCount)
 }

@@ -946,6 +946,11 @@ func (s *SQLiteStore) migrate() error {
 			hit_count INTEGER NOT NULL DEFAULT 0,
 			last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// #14421: existing DBs may have kb_query_gaps without last_seen; the
+		// ALTER TABLE is idempotent (duplicate column name is ignored above).
+		// Use a literal default because SQLite rejects non-constant expressions
+		// (like CURRENT_TIMESTAMP) in ALTER TABLE ADD COLUMN.
+		"ALTER TABLE kb_query_gaps ADD COLUMN last_seen DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'",
 		"CREATE INDEX IF NOT EXISTS idx_kb_query_gaps_last_seen ON kb_query_gaps(last_seen DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_kb_query_gaps_hits ON kb_query_gaps(hit_count DESC, last_seen DESC)",
 	}
